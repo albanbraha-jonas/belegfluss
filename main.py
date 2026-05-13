@@ -131,10 +131,10 @@ def speichere_in_belegfluss(analyse, dateiname, mail_datum):
     try:
         url = f"{BELEGFLUSS_URL}/api/public/agent/dokument"
         headers = {
-            "x-agent-key": BELEGFLUSS_KEY,
-            "Content-Type": "application/json"
-        }
-        
+    "x-agent-key": BELEGFLUSS_KEY,
+    "Content-Type": "application/json"
+}
+print(f"DEBUG Key wird gesendet: {BELEGFLUSS_KEY[:8] if BELEGFLUSS_KEY else 'LEER'}")
         daten = {
             "absender": analyse.get("absender_name", "Unbekannt"),
             "typ": analyse.get("typ", "Sonstiges"),
