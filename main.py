@@ -20,6 +20,9 @@ CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", "60"))
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
+# Kontoplan wird einmalig beim Start geladen
+KONTOPLAN = []
+
 def log(message):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}")
 
@@ -37,6 +40,50 @@ def hole_ungelesene_mails(mail):
     mail.select("INBOX")
     _, nachrichten = mail.search(None, "UNSEEN")
     return nachrichten[0].split()
+
+def lade_kontoplan():
+    """Lädt den Kontoplan einmalig beim Start"""
+    global KONTOPLAN
+    try:
+        url = f"{BELEGFLUSS_URL}/api/public/agent/kontoplan"
+        headers = {"x-agent-key": BELEGFLUSS_KEY}
+        antwort = requests.get(url, headers=headers, timeout=30)
+        if antwort.status_code in [200, 201]:
+            KONTOPLAN = antwort.json()
+            log(f"✅ Kontoplan geladen: {len(KONTOPLAN)} Konten")
+        else:
+            log(f"⚠️ Kontoplan nicht geladen: {antwort.status_code}")
+    except Exception as e:
+        log(f"⚠️ Kontoplan Fehler: {e}")
+
+def kontoplan_als_text():
+    """Formatiert den Kontoplan als Text für Claude"""
+    if not KONTOPLAN:
+        return "Kein Kontoplan verfügbar. Verwende Standard KMU-Konten."
+    zeilen = []
+    for konto in KONTOPLAN:
+        zeilen.append(f"{konto.get('kontonummer', '')} - {konto.get('kontobezeichnung', '')} ({konto.get('typ', '')})")
+    return "\n".join(zeilen)
+
+def lade_pdf_hoch(pdf_daten, dateiname):
+    """Lädt PDF in Supabase Storage hoch und gibt URL zurück"""
+    try:
+        url = f"{BELEGFLUSS_URL}/api/public/agent/upload"
+        headers = {"x-agent-key": BELEGFLUSS_KEY}
+        files = {"file": (dateiname, pdf_daten, "application/pdf")}
+        antwort = requests.post(url, headers=headers, files=files, timeout=60)
+        log(f"📤 Upload Status: {antwort.status_code}")
+        if antwort.status_code in [200, 201]:
+            daten = antwort.json()
+            pdf_url = daten.get("url", "")
+            log(f"✅ PDF hochgeladen: {pdf_url[:50]}...")
+            return pdf_url
+        else:
+            log(f"❌ Upload Fehler: {antwort.text[:100]}")
+            return None
+    except Exception as e:
+        log(f"❌ Upload Exception: {e}")
+        return None
 
 def extrahiere_pdf(mail, mail_id):
     _, daten = mail.fetch(mail_id, "(RFC822)")
@@ -65,26 +112,42 @@ def lese_pdf_text(pdf_daten):
         return ""
 
 def analysiere_mit_claude(pdf_text, absender, betreff):
-    prompt = f"""Du bist ein Schweizer Buchhaltungsassistent. Analysiere dieses Dokument und antworte NUR mit einem JSON-Objekt.
+    kontoplan_text = kontoplan_als_text()
 
+    prompt = f"""Du bist ein erfahrener Schweizer Buchhalter und Treuhänder mit 20 Jahren Erfahrung.
+Analysiere dieses Dokument und kontiere es korrekt gemäss dem Kontoplan der Firma.
+
+KONTOPLAN DER FIRMA:
+{kontoplan_text}
+
+DOKUMENT:
 Absender: {absender}
 Betreff: {betreff}
-
-Dokumentinhalt:
+Inhalt:
 {pdf_text[:3000]}
 
-Antworte NUR mit diesem JSON (keine weiteren Texte):
+AUFGABE:
+Analysiere das Dokument und wähle die korrekten Kontonummern aus dem obigen Kontoplan.
+Denke wie ein erfahrener Schweizer Buchhalter:
+- Telefonrechnung → Telekommunikationsaufwand
+- Miete → Mietaufwand
+- Büromaterial → Büroaufwand
+- Versicherung → Versicherungsaufwand
+- Lohnabrechnung → Personalaufwand
+- Kreditoren immer auf Konto 2000 (Kreditoren)
+
+Antworte NUR mit diesem JSON (keine weiteren Texte, keine Erklärungen):
 {{
   "typ": "Rechnung|Mahnung|Behoerde|MWST|AHV|Vertrag|Sonstiges",
-  "absender_name": "Name des Absenders",
+  "absender_name": "Exakter Name des Absenders aus dem Dokument",
   "betrag": 0.00,
   "mwst_satz": 8.1,
   "mwst_betrag": 0.00,
   "frist": "YYYY-MM-DD oder null",
-  "konto_aufwand": "4000",
+  "konto_aufwand": "Kontonummer aus dem Kontoplan",
   "konto_kredit": "2000",
   "prioritaet": "Dringend|Diese Woche|Kein Eiltempo",
-  "zusammenfassung": "Kurze Zusammenfassung auf Deutsch"
+  "zusammenfassung": "1-2 Sätze Zusammenfassung auf Deutsch"
 }}"""
 
     try:
@@ -101,18 +164,16 @@ Antworte NUR mit diesem JSON (keine weiteren Texte):
                 text = text[4:]
         return json.loads(text)
     except Exception as e:
-        log(f"❌ Claude Analysefehler: {e}")
+        log(f"❌ Claude Fehler: {e}")
         return None
 
-def speichere_in_belegfluss(analyse, dateiname, mail_datum):
+def speichere_in_belegfluss(analyse, dateiname, mail_datum, pdf_url=None):
     try:
         url = f"{BELEGFLUSS_URL}/api/public/agent/dokument"
         headers = {
             "x-agent-key": BELEGFLUSS_KEY,
             "Content-Type": "application/json"
         }
-        log(f"🔑 Key (erste 8): {BELEGFLUSS_KEY[:8] if BELEGFLUSS_KEY else 'LEER'}")
-        log(f"🌐 URL: {url}")
         daten = {
             "absender": analyse.get("absender_name", "Unbekannt"),
             "typ": analyse.get("typ", "Sonstiges"),
@@ -126,16 +187,16 @@ def speichere_in_belegfluss(analyse, dateiname, mail_datum):
             "agent_zusammenfassung": analyse.get("zusammenfassung", ""),
             "agent_verarbeitet": True,
             "original_dateiname": dateiname,
-            "datum": mail_datum
+            "datum": mail_datum,
+            "pdf_url": pdf_url
         }
         antwort = requests.post(url, headers=headers, json=daten, timeout=30)
         log(f"📡 Status: {antwort.status_code}")
-        log(f"📡 Body: {antwort.text[:300]}")
         if antwort.status_code in [200, 201]:
             log(f"✅ Gespeichert: {dateiname}")
             return antwort.json()
         else:
-            log(f"❌ Fehler: {antwort.status_code} - {antwort.text}")
+            log(f"❌ Fehler: {antwort.status_code} - {antwort.text[:100]}")
             return None
     except Exception as e:
         log(f"❌ Speicherfehler: {e}")
@@ -161,19 +222,34 @@ def verarbeite_mail(mail, mail_id):
         return
     for pdf in mail_daten["pdfs"]:
         log(f"📄 PDF: {pdf['dateiname']}")
+
+        # 1. PDF hochladen
+        log("📤 Lade PDF hoch...")
+        pdf_url = lade_pdf_hoch(pdf["daten"], pdf["dateiname"])
+
+        # 2. PDF Text lesen
         pdf_text = lese_pdf_text(pdf["daten"])
         if not pdf_text:
             log("⚠️ PDF nicht lesbar")
             continue
-        log("🤖 Analysiere...")
+
+        # 3. Mit Claude analysieren (mit Kontoplan)
+        log("🤖 Analysiere mit Claude + Kontoplan...")
         analyse = analysiere_mit_claude(pdf_text, absender, betreff)
         if not analyse:
             log("❌ Analyse fehlgeschlagen")
             continue
-        log(f"✅ {analyse['typ']} | {analyse['betrag']} CHF | {analyse['prioritaet']}")
-        ergebnis = speichere_in_belegfluss(analyse, pdf["dateiname"], mail_daten["datum"])
+
+        log(f"✅ {analyse['typ']} | {analyse['betrag']} CHF | Konto {analyse['konto_aufwand']}/{analyse['konto_kredit']} | {analyse['prioritaet']}")
+
+        # 4. In Belegfluss speichern
+        ergebnis = speichere_in_belegfluss(analyse, pdf["dateiname"], mail_daten["datum"], pdf_url)
         if ergebnis:
-            logge_aktion("DOKUMENT_VERARBEITET", f"{pdf['dateiname']} | {analyse['typ']} | {analyse['betrag']} CHF", ergebnis.get("id"))
+            logge_aktion(
+                "DOKUMENT_VERARBEITET",
+                f"{pdf['dateiname']} | {analyse['typ']} | {analyse['betrag']} CHF | Konto {analyse['konto_aufwand']}",
+                ergebnis.get("id")
+            )
             log("🎉 Erfolgreich gespeichert!")
 
 def haupt_schleife():
@@ -182,6 +258,10 @@ def haupt_schleife():
     log(f"🔄 Intervall: {CHECK_INTERVAL}s")
     log(f"🌐 URL: {BELEGFLUSS_URL}")
     log(f"🔑 Key: {'OK' if BELEGFLUSS_KEY else 'FEHLT!'}")
+
+    # Kontoplan einmalig laden
+    lade_kontoplan()
+
     while True:
         try:
             mail = verbinde_imap()
