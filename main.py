@@ -15,7 +15,7 @@ IMAP_PORT = int(os.environ.get("IMAP_PORT", "993"))
 IMAP_EMAIL = os.environ.get("IMAP_EMAIL")
 IMAP_PASSWORD = os.environ.get("IMAP_PASSWORD")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-BELEGFLUSS_URL = os.environ.get("BELEGFLUSS_URL")
+BELEGFLUSS_URL = os.environ.get("BELEGFLUSS_URL", "").strip()
 BELEGFLUSS_KEY = os.environ.get("BELEGFLUSS_KEY")
 CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", "60"))
 
