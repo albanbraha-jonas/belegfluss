@@ -8,6 +8,10 @@ import PyPDF2
 import io
 import json
 from datetime import datetime
+from reportlab.pdfgen import canvas
+from reportlab.lib.colors import HexColor, white, black
+from reportlab.lib.units import mm
+from PyPDF2 import PdfReader, PdfWriter
 
 IMAP_SERVER = os.environ.get("IMAP_SERVER", "imap.hostinger.com")
 IMAP_PORT = int(os.environ.get("IMAP_PORT", "993"))
@@ -43,17 +47,149 @@ def normalisiere_prioritaet(wert):
         return "Kein Eiltempo"
     return PRIORITAET_MAP.get(wert.lower().strip(), "Kein Eiltempo")
 
-def berechne_betraege(brutto, mwst_satz):
-    """Berechnet Netto und Vorsteuer aus Bruttobetrag"""
-    if not brutto or brutto == 0:
+def berechne_betraege(betrag_netto, mwst_satz):
+    """Berechnet MWST und Brutto aus Nettobetrag"""
+    if not betrag_netto or betrag_netto == 0:
         return 0, 0, 0
-    faktor = 1 + (mwst_satz / 100)
-    netto = round(brutto / faktor, 2)
-    vorsteuer = round(brutto - netto, 2)
-    return netto, vorsteuer, brutto
+    mwst = round(betrag_netto * (mwst_satz / 100), 2)
+    brutto = round(betrag_netto + mwst, 2)
+    netto = round(betrag_netto, 2)
+    return netto, mwst, brutto
 
 def log(message):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}")
+
+def erstelle_buchungsstempel(analyse):
+    """Erstellt Buchungsstempel als PDF overlay"""
+    packet = io.BytesIO()
+    c = canvas.Canvas(packet, pagesize=(210*mm, 297*mm))
+
+    vorsteuer_aktiv = analyse.get("vorsteuer_aktiv", True)
+    konto_aufwand = analyse.get("konto_aufwand", "")
+    konto_vorsteuer = analyse.get("konto_vorsteuer", "1170")
+    konto_kredit = analyse.get("konto_kredit", "2000")
+    betrag_netto = analyse.get("betrag_netto", 0)
+    mwst_betrag = analyse.get("mwst_betrag", 0)
+    betrag_brutto = analyse.get("betrag_brutto", 0)
+    mwst_satz = analyse.get("mwst_satz", 8.1)
+    datum = datetime.now().strftime("%d.%m.%Y")
+
+    # Stempel oben rechts
+    x = 118*mm
+    y = 238*mm
+    breite = 88*mm
+    hoehe = 58*mm if vorsteuer_aktiv else 48*mm
+
+    # Weisser Hintergrund
+    c.setFillColor(white)
+    c.rect(x, y, breite, hoehe, fill=1, stroke=0)
+
+    # Roter Rahmen
+    c.setStrokeColor(HexColor("#CC0000"))
+    c.setLineWidth(1.5)
+    c.rect(x, y, breite, hoehe, fill=0, stroke=1)
+
+    # Roter Header
+    c.setFillColor(HexColor("#CC0000"))
+    c.rect(x, y + hoehe - 9*mm, breite, 9*mm, fill=1, stroke=0)
+
+    # Header Text
+    c.setFillColor(white)
+    c.setFont("Helvetica-Bold", 7.5)
+    c.drawString(x + 3*mm, y + hoehe - 6*mm, "BUCHUNGSBELEG")
+    c.drawRightString(x + breite - 3*mm, y + hoehe - 6*mm, datum)
+
+    # Spaltenheader
+    zeile_y = y + hoehe - 14*mm
+    c.setFillColor(HexColor("#333333"))
+    c.setFont("Helvetica-Bold", 6)
+    c.drawString(x + 2*mm, zeile_y, "Typ")
+    c.drawString(x + 12*mm, zeile_y, "Konto")
+    c.drawString(x + 28*mm, zeile_y, "Bezeichnung")
+    c.drawRightString(x + breite - 2*mm, zeile_y, "CHF")
+
+    # Trennlinie
+    zeile_y -= 2.5*mm
+    c.setStrokeColor(HexColor("#CCCCCC"))
+    c.setLineWidth(0.5)
+    c.line(x + 1*mm, zeile_y, x + breite - 1*mm, zeile_y)
+    zeile_y -= 5*mm
+
+    c.setFont("Helvetica", 6.5)
+    abstand = 6.5*mm
+
+    # SOLL: Aufwandkonto (Netto)
+    c.setFillColor(HexColor("#CC0000"))
+    c.setFont("Helvetica-Bold", 6)
+    c.drawString(x + 2*mm, zeile_y, "SOLL")
+    c.setFillColor(black)
+    c.setFont("Helvetica", 6.5)
+    c.drawString(x + 12*mm, zeile_y, konto_aufwand)
+    c.drawString(x + 28*mm, zeile_y, "Aufwand")
+    c.drawRightString(x + breite - 2*mm, zeile_y, f"{betrag_netto:,.2f}")
+    zeile_y -= abstand
+
+    if vorsteuer_aktiv:
+        # SOLL: Vorsteuer
+        c.setFillColor(HexColor("#CC0000"))
+        c.setFont("Helvetica-Bold", 6)
+        c.drawString(x + 2*mm, zeile_y, "SOLL")
+        c.setFillColor(black)
+        c.setFont("Helvetica", 6.5)
+        c.drawString(x + 12*mm, zeile_y, konto_vorsteuer)
+        c.drawString(x + 28*mm, zeile_y, f"Vorsteuer {mwst_satz}%")
+        c.drawRightString(x + breite - 2*mm, zeile_y, f"{mwst_betrag:,.2f}")
+        zeile_y -= abstand
+
+    # HABEN: Kreditoren (Brutto)
+    c.setFillColor(HexColor("#006600"))
+    c.setFont("Helvetica-Bold", 6)
+    c.drawString(x + 2*mm, zeile_y, "HABEN")
+    c.setFillColor(black)
+    c.setFont("Helvetica", 6.5)
+    c.drawString(x + 12*mm, zeile_y, konto_kredit)
+    c.drawString(x + 28*mm, zeile_y, "Kreditoren")
+    c.drawRightString(x + breite - 2*mm, zeile_y, f"{betrag_brutto:,.2f}")
+
+    # Trennlinie vor Footer
+    zeile_y -= 3*mm
+    c.setStrokeColor(HexColor("#CC0000"))
+    c.setLineWidth(0.5)
+    c.line(x + 1*mm, zeile_y, x + breite - 1*mm, zeile_y)
+    zeile_y -= 4*mm
+
+    # Footer
+    c.setFont("Helvetica-Bold", 5.5)
+    c.setFillColor(HexColor("#666666"))
+    c.drawString(x + 2*mm, zeile_y, f"Kontiert: {datum}  |  KI-Agent Belegfluss")
+
+    c.save()
+    packet.seek(0)
+    return packet
+
+def stempel_auf_pdf(pdf_daten, analyse):
+    """Fügt Buchungsstempel auf erste Seite des PDFs ein"""
+    try:
+        stempel_pdf = erstelle_buchungsstempel(analyse)
+        stempel_reader = PdfReader(stempel_pdf)
+        stempel_seite = stempel_reader.pages[0]
+
+        original_reader = PdfReader(io.BytesIO(pdf_daten))
+        writer = PdfWriter()
+
+        for i, seite in enumerate(original_reader.pages):
+            if i == 0:
+                seite.merge_page(stempel_seite)
+            writer.add_page(seite)
+
+        output = io.BytesIO()
+        writer.write(output)
+        output.seek(0)
+        log("✅ Buchungsstempel gesetzt")
+        return output.read()
+    except Exception as e:
+        log(f"❌ Stempel Fehler: {e} – verwende Original")
+        return pdf_daten
 
 def verbinde_imap():
     try:
@@ -78,7 +214,6 @@ def lade_kontoplan():
         antwort = requests.get(url, headers=headers, timeout=30)
         if antwort.status_code in [200, 201]:
             daten = antwort.json()
-            # Kontoplan und Firmaeinstellungen trennen
             if isinstance(daten, dict):
                 KONTOPLAN = daten.get("konten", [])
                 FIRMA_SETTINGS = daten.get("settings", {})
@@ -87,7 +222,6 @@ def lade_kontoplan():
                 FIRMA_SETTINGS = {}
             log(f"✅ Kontoplan geladen: {len(KONTOPLAN)} Konten")
             log(f"✅ Vorsteuer aktiv: {FIRMA_SETTINGS.get('vorsteuer_aktiv', True)}")
-            log(f"✅ Vorsteuer-Konto: {FIRMA_SETTINGS.get('konto_vorsteuer', '1170')}")
         else:
             log(f"⚠️ Kontoplan Fehler: {antwort.status_code}")
     except Exception as e:
@@ -148,54 +282,54 @@ def analysiere_mit_claude(pdf_text, absender, betreff):
 
     prompt = f"""Du bist ein erfahrener Schweizer Treuhänder mit 20 Jahren KMU-Erfahrung.
 
-AUFGABE: Analysiere dieses Dokument für die Buchhaltung.
+AUFGABE: Analysiere dieses Dokument und extrahiere die Buchhaltungsdaten.
+
+WICHTIG BETRÄGE:
+- Gib immer den NETTO-Betrag zurück (ohne MWST)
+- Beispiel: Total CHF 4500.00 + MWST 8.1% CHF 364.50 = Brutto CHF 4864.50 → betrag_netto = 4500.00
+- NIEMALS den Bruttobetrag als Netto angeben!
 
 MWST-EINSTELLUNG dieser Firma:
-- Vorsteuerabzug: {"JA - Dreiecksbuchung anwenden" if vorsteuer_aktiv else "NEIN - Saldosteuersatz"}
-- Vorsteuer-Konto: {konto_vorsteuer}
+- Vorsteuerabzug: {"JA" if vorsteuer_aktiv else "NEIN"}
 
-AUFWANDKONTEN:
+AUFWANDKONTEN (wähle das passendste):
 {kontoplan_text}
 
 KONTIERUNGSREGELN:
-- Werbung, Plakate, APG, Marketing → 6600
+- Werbung, APG, Marketing, Inserate → 6600
 - Reinigung, Reinigungsservice → 6040
-- Telefon, Internet, Swisscom, Salt → 6510
+- Telefon, Internet, Swisscom, Salt, Sunrise → 6510
 - Miete, Raumkosten → 6000
 - Versicherungen → 6300
 - Strom, Gas, Wasser → 6400
 - Fahrzeuge, Treibstoff → 6200
-- Fahrzeugleasing → 6260
-- Büromaterial → 6500
-- IT, Software → 6570
-- Beratung, Treuhand, Anwalt → 6530
+- Büromaterial, Drucksachen → 6500
+- IT, Software, EDV → 6570
+- Beratung, Treuhand, Buchhaltung, Anwalt → 6530
 - Löhne → 5000
 - AHV, Sozialversicherungen → 5700
 - Material, Waren → 4000
 - Fremdarbeiten → 4060
 - Bankspesen → 6940
-- Maschinenunterhalt → 6100
-- Kreditoren (Haben) IMMER → 2000
-
-BUCHUNGSLOGIK:
-{"Dreiecksbuchung: Aufwandkonto (Netto) SOLL + Vorsteuer " + konto_vorsteuer + " SOLL + Kreditoren 2000 (Brutto) HABEN" if vorsteuer_aktiv else "Zweizeilenbuchung: Aufwandkonto (Brutto inkl. MWST) SOLL + Kreditoren 2000 HABEN"}
+- Kreditoren IMMER → 2000
 
 DOKUMENT:
 Absender: {absender}
 Betreff: {betreff}
-Inhalt: {pdf_text[:3000]}
+Inhalt:
+{pdf_text[:3000]}
 
-Antworte NUR mit validem JSON:
+Antworte NUR mit validem JSON, kein Markdown:
 {{
   "typ": "Rechnung",
-  "absender_name": "exakter Firmenname",
-  "betrag_brutto": 0.00,
+  "absender_name": "exakter Firmenname aus Dokument",
+  "betrag_netto": 0.00,
   "mwst_satz": 8.1,
-  "prioritaet": "Kein Eiltempo",
   "frist": "YYYY-MM-DD oder null",
   "konto_aufwand": "KONTONUMMER",
   "konto_kredit": "2000",
-  "zusammenfassung": "1 Satz auf Deutsch"
+  "prioritaet": "Kein Eiltempo",
+  "zusammenfassung": "1 Satz auf Deutsch was diese Rechnung ist"
 }}"""
 
     try:
@@ -211,19 +345,22 @@ Antworte NUR mit validem JSON:
             if text.startswith("json"):
                 text = text[4:]
         result = json.loads(text.strip())
+
+        # Priorität normalisieren
         result["prioritaet"] = normalisiere_prioritaet(result.get("prioritaet", ""))
 
-        # Beträge berechnen
-        brutto = result.get("betrag_brutto", 0)
+        # Beträge berechnen: Netto → MWST → Brutto
+        betrag_netto = result.get("betrag_netto", 0)
         mwst_satz = result.get("mwst_satz", 8.1)
-        netto, vorsteuer, brutto = berechne_betraege(brutto, mwst_satz)
+        netto, mwst_betrag, brutto = berechne_betraege(betrag_netto, mwst_satz)
+
         result["betrag_netto"] = netto
+        result["mwst_betrag"] = mwst_betrag
         result["betrag_brutto"] = brutto
-        result["mwst_betrag"] = vorsteuer
         result["konto_vorsteuer"] = konto_vorsteuer if vorsteuer_aktiv else None
         result["vorsteuer_aktiv"] = vorsteuer_aktiv
 
-        log(f"✅ Konto {result.get('konto_aufwand')} | Netto: {netto} | Vorsteuer: {vorsteuer} | Brutto: {brutto}")
+        log(f"✅ Konto {result.get('konto_aufwand')} | Netto: {netto} + MWST: {mwst_betrag} = Brutto: {brutto}")
         return result
     except Exception as e:
         log(f"❌ Claude Fehler: {e}")
@@ -232,10 +369,7 @@ Antworte NUR mit validem JSON:
 def speichere_in_belegfluss(analyse, dateiname, mail_datum, pdf_url=None):
     try:
         url = f"{BELEGFLUSS_URL}/api/public/agent/dokument"
-        headers = {
-            "x-agent-key": BELEGFLUSS_KEY,
-            "Content-Type": "application/json"
-        }
+        headers = {"x-agent-key": BELEGFLUSS_KEY, "Content-Type": "application/json"}
         daten = {
             "absender": analyse.get("absender_name", "Unbekannt"),
             "typ": analyse.get("typ", "Sonstiges"),
@@ -256,7 +390,6 @@ def speichere_in_belegfluss(analyse, dateiname, mail_datum, pdf_url=None):
             "pdf_url": pdf_url
         }
         antwort = requests.post(url, headers=headers, json=daten, timeout=30)
-        log(f"📡 Status: {antwort.status_code}")
         if antwort.status_code in [200, 201]:
             log("✅ Gespeichert!")
             return antwort.json()
@@ -287,21 +420,41 @@ def verarbeite_mail(mail, mail_id):
         return
     for pdf in mail_daten["pdfs"]:
         log(f"📄 PDF: {pdf['dateiname']}")
-        log("📤 Lade PDF hoch...")
-        pdf_url = lade_pdf_hoch(pdf["daten"], pdf["dateiname"])
+
+        # 1. PDF Text lesen
         pdf_text = lese_pdf_text(pdf["daten"])
         if not pdf_text:
             log("⚠️ PDF nicht lesbar")
             continue
+
+        # 2. Mit Claude analysieren
         log("🤖 Analysiere mit Claude + Kontoplan...")
         analyse = analysiere_mit_claude(pdf_text, absender, betreff)
         if not analyse:
             log("❌ Analyse fehlgeschlagen")
             continue
+
+        log(f"📊 Buchung: {analyse.get('konto_aufwand')} CHF {analyse.get('betrag_netto')} + "
+            f"1170 CHF {analyse.get('mwst_betrag')} / 2000 CHF {analyse.get('betrag_brutto')}")
+
+        # 3. Buchungsstempel auf PDF setzen
+        log("🖊️ Setze Buchungsstempel...")
+        pdf_mit_stempel = stempel_auf_pdf(pdf["daten"], analyse)
+
+        # 4. Gestempeltes PDF hochladen
+        log("📤 Lade gestempeltes PDF hoch...")
+        dateiname_gestempelt = f"kontiert_{pdf['dateiname']}"
+        pdf_url = lade_pdf_hoch(pdf_mit_stempel, dateiname_gestempelt)
+
+        # 5. In Belegfluss speichern
         ergebnis = speichere_in_belegfluss(analyse, pdf["dateiname"], mail_daten["datum"], pdf_url)
         if ergebnis:
-            logge_aktion("DOKUMENT_VERARBEITET", f"{pdf['dateiname']} | {analyse.get('typ')} | Netto: {analyse.get('betrag_netto')} CHF | Konto {analyse.get('konto_aufwand')}", ergebnis.get("id"))
-            log("🎉 Erfolgreich gespeichert!")
+            logge_aktion(
+                "DOKUMENT_VERARBEITET",
+                f"{pdf['dateiname']} | Netto: {analyse.get('betrag_netto')} | MWST: {analyse.get('mwst_betrag')} | Brutto: {analyse.get('betrag_brutto')} | Konto {analyse.get('konto_aufwand')}",
+                ergebnis.get("id")
+            )
+            log("🎉 Erfolgreich gespeichert mit Buchungsstempel!")
 
 def haupt_schleife():
     log("🚀 Belegfluss Agent gestartet")
