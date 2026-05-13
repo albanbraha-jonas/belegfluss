@@ -21,6 +21,29 @@ CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", "60"))
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 KONTOPLAN = []
 
+PRIORITAET_MAP = {
+    "normal": "Kein Eiltempo",
+    "niedrig": "Kein Eiltempo",
+    "low": "Kein Eiltempo",
+    "mittel": "Diese Woche",
+    "medium": "Diese Woche",
+    "hoch": "Dringend",
+    "high": "Dringend",
+    "urgent": "Dringend",
+    "kritisch": "Dringend",
+    "dringend": "Dringend",
+    "diese woche": "Diese Woche",
+    "kein eiltempo": "Kein Eiltempo",
+    "überfällig": "Überfällig",
+    "uberfällig": "Überfällig",
+}
+
+def normalisiere_prioritaet(wert):
+    if not wert:
+        return "Kein Eiltempo"
+    wert_lower = wert.lower().strip()
+    return PRIORITAET_MAP.get(wert_lower, "Kein Eiltempo")
+
 def log(message):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}")
 
@@ -56,7 +79,7 @@ def lade_kontoplan():
 def kontoplan_als_text():
     if not KONTOPLAN:
         return "Kein Kontoplan verfügbar."
-    aufwand = [k for k in KONTOPLAN if k.get('typ') == 'Aufwand']
+    aufwand = [k for k in KONTOPLAN if k.get("typ") == "Aufwand"]
     zeilen = []
     for k in aufwand:
         zeilen.append(f"{k.get('kontonummer')} = {k.get('kontobezeichnung')}")
@@ -70,9 +93,8 @@ def lade_pdf_hoch(pdf_daten, dateiname):
         antwort = requests.post(url, headers=headers, files=files, timeout=60)
         if antwort.status_code in [200, 201]:
             daten = antwort.json()
-            pdf_url = daten.get("url", "")
-            log(f"✅ PDF hochgeladen")
-            return pdf_url
+            log("✅ PDF hochgeladen")
+            return daten.get("url", "")
         else:
             log(f"❌ Upload Fehler: {antwort.status_code}")
             return None
@@ -109,50 +131,51 @@ def lese_pdf_text(pdf_daten):
 def analysiere_mit_claude(pdf_text, absender, betreff):
     kontoplan_text = kontoplan_als_text()
 
-    prompt = f"""Du bist ein erfahrener Schweizer Treuhänder und Buchhalter mit 20 Jahren Erfahrung bei KMU.
+    prompt = f"""Du bist ein erfahrener Schweizer Treuhänder mit 20 Jahren KMU-Erfahrung.
 
-AUFGABE: Analysiere dieses Dokument und kontiere es EXAKT nach dem folgenden Kontoplan.
+AUFGABE: Analysiere dieses Dokument und kontiere es nach dem Kontoplan.
 
-KONTOPLAN (NUR AUFWANDKONTEN - du MUSST eines dieser Konten wählen):
+AUFWANDKONTEN (wähle das passendste):
 {kontoplan_text}
 
-KONTIERUNGSREGELN (sehr wichtig):
-- Werbung, Plakate, APG, Marketing → 6600
-- Reinigung, Absaugtechnik, Putzmittel → 6040
-- Telefon, Internet, Swisscom, Salt, Sunrise → 6510
-- Miete, Raumkosten → 6000
+KONTIERUNGSREGELN:
+- Werbung, Plakate, APG, Marketing, Inserate → 6600
+- Reinigung, Putzmittel, Reinigungsservice → 6040
+- Telefon, Internet, Swisscom, Salt, Sunrise, UPC → 6510
+- Miete, Raumkosten, Mietvertrag → 6000
 - Versicherungen → 6300
-- Strom, Gas, Wasser → 6400
-- Fahrzeuge, Treibstoff → 6200
-- Büromaterial → 6500
-- IT, Software, Computer → 6570
-- Beratung, Treuhand, Anwalt → 6530
-- Löhne → 5000
-- AHV/Sozialversicherungen → 5700
-- Material, Waren → 4000
+- Strom, Gas, Wasser, Energie → 6400
+- Fahrzeuge, Treibstoff, Autokosten → 6200
+- Fahrzeugleasing → 6260
+- Büromaterial, Papier, Drucksachen → 6500
+- IT, Software, Computer, Informatik → 6570
+- Beratung, Treuhand, Anwalt, Revision → 6530
+- Löhne, Gehälter → 5000
+- AHV, IV, Sozialversicherungen → 5700
+- Material, Rohmaterial, Waren → 4000
 - Fremdarbeiten, Subunternehmer → 4060
-- Bankspesen → 6940
-- NIEMALS einfach 4000 nehmen ausser es ist wirklich Materialaufwand!
-- Kreditoren (Haben-Seite) immer → 2000
+- Bankspesen, Kontogebühren → 6940
+- Maschinenunterhalt, Reparaturen → 6100
+- Maschinenleasing → 6160
+- Kreditoren (Haben) IMMER → 2000
 
 DOKUMENT:
 Absender: {absender}
 Betreff: {betreff}
-Inhalt:
-{pdf_text[:3000]}
+Inhalt: {pdf_text[:3000]}
 
-Antworte AUSSCHLIESSLICH mit diesem JSON - keine anderen Texte, keine Erklärungen, kein Markdown:
+Antworte NUR mit validem JSON, kein Markdown, keine Erklärungen:
 {{
   "typ": "Rechnung",
-  "absender_name": "exakter Firmenname aus Dokument",
+  "absender_name": "exakter Firmenname",
   "betrag": 0.00,
   "mwst_satz": 8.1,
   "mwst_betrag": 0.00,
   "frist": "YYYY-MM-DD oder null",
-  "konto_aufwand": "KONTONUMMER aus obigem Kontoplan",
+  "konto_aufwand": "KONTONUMMER",
   "konto_kredit": "2000",
-  "prioritaet": "Dringend",
-  "zusammenfassung": "1 Satz Zusammenfassung"
+  "prioritaet": "Kein Eiltempo",
+  "zusammenfassung": "1 Satz"
 }}"""
 
     try:
@@ -162,27 +185,14 @@ Antworte AUSSCHLIESSLICH mit diesem JSON - keine anderen Texte, keine Erklärung
             messages=[{"role": "user", "content": prompt}]
         )
         text = antwort.content[0].text.strip()
-        log(f"🤖 Claude Antwort: {text[:100]}")
         if "```" in text:
             parts = text.split("```")
             text = parts[1]
             if text.startswith("json"):
                 text = text[4:]
         result = json.loads(text.strip())
-        # Priorität normalisieren
-prioritaet_map = {
-    "normal": "Kein Eiltempo",
-    "niedrig": "Kein Eiltempo", 
-    "mittel": "Diese Woche",
-    "hoch": "Dringend",
-    "urgent": "Dringend",
-    "low": "Kein Eiltempo",
-    "medium": "Diese Woche",
-    "high": "Dringend"
-}
-p = result.get("prioritaet", "Kein Eiltempo").lower()
-result["prioritaet"] = prioritaet_map.get(p, result.get("prioritaet", "Kein Eiltempo"))
-        log(f"✅ Kontierung: {result.get('konto_aufwand')} / {result.get('konto_kredit')}")
+        result["prioritaet"] = normalisiere_prioritaet(result.get("prioritaet", ""))
+        log(f"✅ Kontierung: {result.get('konto_aufwand')} / {result.get('konto_kredit')} | Priorität: {result.get('prioritaet')}")
         return result
     except Exception as e:
         log(f"❌ Claude Fehler: {e}")
@@ -212,11 +222,12 @@ def speichere_in_belegfluss(analyse, dateiname, mail_datum, pdf_url=None):
             "pdf_url": pdf_url
         }
         antwort = requests.post(url, headers=headers, json=daten, timeout=30)
+        log(f"📡 Status: {antwort.status_code}")
         if antwort.status_code in [200, 201]:
-            log(f"✅ Gespeichert: {dateiname}")
+            log(f"✅ Gespeichert!")
             return antwort.json()
         else:
-            log(f"❌ Fehler: {antwort.status_code} - {antwort.text[:100]}")
+            log(f"❌ Fehler: {antwort.status_code} - {antwort.text[:200]}")
             return None
     except Exception as e:
         log(f"❌ Speicherfehler: {e}")
@@ -253,7 +264,7 @@ def verarbeite_mail(mail, mail_id):
         if not analyse:
             log("❌ Analyse fehlgeschlagen")
             continue
-        log(f"✅ {analyse.get('typ')} | {analyse.get('betrag')} CHF | Konto {analyse.get('konto_aufwand')}/{analyse.get('konto_kredit')} | {analyse.get('prioritaet')}")
+        log(f"✅ {analyse.get('typ')} | {analyse.get('betrag')} CHF | {analyse.get('konto_aufwand')}/{analyse.get('konto_kredit')} | {analyse.get('prioritaet')}")
         ergebnis = speichere_in_belegfluss(analyse, pdf["dateiname"], mail_daten["datum"], pdf_url)
         if ergebnis:
             logge_aktion("DOKUMENT_VERARBEITET", f"{pdf['dateiname']} | {analyse.get('typ')} | {analyse.get('betrag')} CHF | Konto {analyse.get('konto_aufwand')}", ergebnis.get("id"))
