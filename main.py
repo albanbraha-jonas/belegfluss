@@ -131,7 +131,7 @@ def speichere_in_belegfluss(analyse, dateiname, mail_datum):
         antwort = requests.post(url, headers=headers, json=daten, timeout=30)
         log(f"📡 Status: {antwort.status_code}")
         log(f"📡 Body: {antwort.text[:300]}")
-        if antwort.status_code == 200:
+        if antwort.status_code in [200, 201]:
             log(f"✅ Gespeichert: {dateiname}")
             return antwort.json()
         else:
