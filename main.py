@@ -169,6 +169,19 @@ Antworte AUSSCHLIESSLICH mit diesem JSON - keine anderen Texte, keine Erklärung
             if text.startswith("json"):
                 text = text[4:]
         result = json.loads(text.strip())
+        # Priorität normalisieren
+prioritaet_map = {
+    "normal": "Kein Eiltempo",
+    "niedrig": "Kein Eiltempo", 
+    "mittel": "Diese Woche",
+    "hoch": "Dringend",
+    "urgent": "Dringend",
+    "low": "Kein Eiltempo",
+    "medium": "Diese Woche",
+    "high": "Dringend"
+}
+p = result.get("prioritaet", "Kein Eiltempo").lower()
+result["prioritaet"] = prioritaet_map.get(p, result.get("prioritaet", "Kein Eiltempo"))
         log(f"✅ Kontierung: {result.get('konto_aufwand')} / {result.get('konto_kredit')}")
         return result
     except Exception as e:
