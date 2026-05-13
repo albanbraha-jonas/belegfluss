@@ -20,6 +20,7 @@ CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", "60"))
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 KONTOPLAN = []
+FIRMA_SETTINGS = {}
 
 PRIORITAET_MAP = {
     "normal": "Kein Eiltempo",
@@ -35,14 +36,21 @@ PRIORITAET_MAP = {
     "diese woche": "Diese Woche",
     "kein eiltempo": "Kein Eiltempo",
     "überfällig": "Überfällig",
-    "uberfällig": "Überfällig",
 }
 
 def normalisiere_prioritaet(wert):
     if not wert:
         return "Kein Eiltempo"
-    wert_lower = wert.lower().strip()
-    return PRIORITAET_MAP.get(wert_lower, "Kein Eiltempo")
+    return PRIORITAET_MAP.get(wert.lower().strip(), "Kein Eiltempo")
+
+def berechne_betraege(brutto, mwst_satz):
+    """Berechnet Netto und Vorsteuer aus Bruttobetrag"""
+    if not brutto or brutto == 0:
+        return 0, 0, 0
+    faktor = 1 + (mwst_satz / 100)
+    netto = round(brutto / faktor, 2)
+    vorsteuer = round(brutto - netto, 2)
+    return netto, vorsteuer, brutto
 
 def log(message):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}")
@@ -63,14 +71,23 @@ def hole_ungelesene_mails(mail):
     return nachrichten[0].split()
 
 def lade_kontoplan():
-    global KONTOPLAN
+    global KONTOPLAN, FIRMA_SETTINGS
     try:
         url = f"{BELEGFLUSS_URL}/api/public/agent/kontoplan"
         headers = {"x-agent-key": BELEGFLUSS_KEY}
         antwort = requests.get(url, headers=headers, timeout=30)
         if antwort.status_code in [200, 201]:
-            KONTOPLAN = antwort.json()
+            daten = antwort.json()
+            # Kontoplan und Firmaeinstellungen trennen
+            if isinstance(daten, dict):
+                KONTOPLAN = daten.get("konten", [])
+                FIRMA_SETTINGS = daten.get("settings", {})
+            else:
+                KONTOPLAN = daten
+                FIRMA_SETTINGS = {}
             log(f"✅ Kontoplan geladen: {len(KONTOPLAN)} Konten")
+            log(f"✅ Vorsteuer aktiv: {FIRMA_SETTINGS.get('vorsteuer_aktiv', True)}")
+            log(f"✅ Vorsteuer-Konto: {FIRMA_SETTINGS.get('konto_vorsteuer', '1170')}")
         else:
             log(f"⚠️ Kontoplan Fehler: {antwort.status_code}")
     except Exception as e:
@@ -80,10 +97,7 @@ def kontoplan_als_text():
     if not KONTOPLAN:
         return "Kein Kontoplan verfügbar."
     aufwand = [k for k in KONTOPLAN if k.get("typ") == "Aufwand"]
-    zeilen = []
-    for k in aufwand:
-        zeilen.append(f"{k.get('kontonummer')} = {k.get('kontobezeichnung')}")
-    return "\n".join(zeilen)
+    return "\n".join([f"{k.get('kontonummer')} = {k.get('kontobezeichnung')}" for k in aufwand])
 
 def lade_pdf_hoch(pdf_daten, dateiname):
     try:
@@ -92,9 +106,8 @@ def lade_pdf_hoch(pdf_daten, dateiname):
         files = {"file": (dateiname, pdf_daten, "application/pdf")}
         antwort = requests.post(url, headers=headers, files=files, timeout=60)
         if antwort.status_code in [200, 201]:
-            daten = antwort.json()
             log("✅ PDF hochgeladen")
-            return daten.get("url", "")
+            return antwort.json().get("url", "")
         else:
             log(f"❌ Upload Fehler: {antwort.status_code}")
             return None
@@ -130,52 +143,59 @@ def lese_pdf_text(pdf_daten):
 
 def analysiere_mit_claude(pdf_text, absender, betreff):
     kontoplan_text = kontoplan_als_text()
+    vorsteuer_aktiv = FIRMA_SETTINGS.get("vorsteuer_aktiv", True)
+    konto_vorsteuer = FIRMA_SETTINGS.get("konto_vorsteuer", "1170")
 
     prompt = f"""Du bist ein erfahrener Schweizer Treuhänder mit 20 Jahren KMU-Erfahrung.
 
-AUFGABE: Analysiere dieses Dokument und kontiere es nach dem Kontoplan.
+AUFGABE: Analysiere dieses Dokument für die Buchhaltung.
 
-AUFWANDKONTEN (wähle das passendste):
+MWST-EINSTELLUNG dieser Firma:
+- Vorsteuerabzug: {"JA - Dreiecksbuchung anwenden" if vorsteuer_aktiv else "NEIN - Saldosteuersatz"}
+- Vorsteuer-Konto: {konto_vorsteuer}
+
+AUFWANDKONTEN:
 {kontoplan_text}
 
 KONTIERUNGSREGELN:
-- Werbung, Plakate, APG, Marketing, Inserate → 6600
-- Reinigung, Putzmittel, Reinigungsservice → 6040
-- Telefon, Internet, Swisscom, Salt, Sunrise, UPC → 6510
-- Miete, Raumkosten, Mietvertrag → 6000
+- Werbung, Plakate, APG, Marketing → 6600
+- Reinigung, Reinigungsservice → 6040
+- Telefon, Internet, Swisscom, Salt → 6510
+- Miete, Raumkosten → 6000
 - Versicherungen → 6300
-- Strom, Gas, Wasser, Energie → 6400
-- Fahrzeuge, Treibstoff, Autokosten → 6200
+- Strom, Gas, Wasser → 6400
+- Fahrzeuge, Treibstoff → 6200
 - Fahrzeugleasing → 6260
-- Büromaterial, Papier, Drucksachen → 6500
-- IT, Software, Computer, Informatik → 6570
-- Beratung, Treuhand, Anwalt, Revision → 6530
-- Löhne, Gehälter → 5000
-- AHV, IV, Sozialversicherungen → 5700
-- Material, Rohmaterial, Waren → 4000
-- Fremdarbeiten, Subunternehmer → 4060
-- Bankspesen, Kontogebühren → 6940
-- Maschinenunterhalt, Reparaturen → 6100
-- Maschinenleasing → 6160
+- Büromaterial → 6500
+- IT, Software → 6570
+- Beratung, Treuhand, Anwalt → 6530
+- Löhne → 5000
+- AHV, Sozialversicherungen → 5700
+- Material, Waren → 4000
+- Fremdarbeiten → 4060
+- Bankspesen → 6940
+- Maschinenunterhalt → 6100
 - Kreditoren (Haben) IMMER → 2000
+
+BUCHUNGSLOGIK:
+{"Dreiecksbuchung: Aufwandkonto (Netto) SOLL + Vorsteuer " + konto_vorsteuer + " SOLL + Kreditoren 2000 (Brutto) HABEN" if vorsteuer_aktiv else "Zweizeilenbuchung: Aufwandkonto (Brutto inkl. MWST) SOLL + Kreditoren 2000 HABEN"}
 
 DOKUMENT:
 Absender: {absender}
 Betreff: {betreff}
 Inhalt: {pdf_text[:3000]}
 
-Antworte NUR mit validem JSON, kein Markdown, keine Erklärungen:
+Antworte NUR mit validem JSON:
 {{
   "typ": "Rechnung",
   "absender_name": "exakter Firmenname",
-  "betrag": 0.00,
+  "betrag_brutto": 0.00,
   "mwst_satz": 8.1,
-  "mwst_betrag": 0.00,
+  "prioritaet": "Kein Eiltempo",
   "frist": "YYYY-MM-DD oder null",
   "konto_aufwand": "KONTONUMMER",
   "konto_kredit": "2000",
-  "prioritaet": "Kein Eiltempo",
-  "zusammenfassung": "1 Satz"
+  "zusammenfassung": "1 Satz auf Deutsch"
 }}"""
 
     try:
@@ -192,7 +212,18 @@ Antworte NUR mit validem JSON, kein Markdown, keine Erklärungen:
                 text = text[4:]
         result = json.loads(text.strip())
         result["prioritaet"] = normalisiere_prioritaet(result.get("prioritaet", ""))
-        log(f"✅ Kontierung: {result.get('konto_aufwand')} / {result.get('konto_kredit')} | Priorität: {result.get('prioritaet')}")
+
+        # Beträge berechnen
+        brutto = result.get("betrag_brutto", 0)
+        mwst_satz = result.get("mwst_satz", 8.1)
+        netto, vorsteuer, brutto = berechne_betraege(brutto, mwst_satz)
+        result["betrag_netto"] = netto
+        result["betrag_brutto"] = brutto
+        result["mwst_betrag"] = vorsteuer
+        result["konto_vorsteuer"] = konto_vorsteuer if vorsteuer_aktiv else None
+        result["vorsteuer_aktiv"] = vorsteuer_aktiv
+
+        log(f"✅ Konto {result.get('konto_aufwand')} | Netto: {netto} | Vorsteuer: {vorsteuer} | Brutto: {brutto}")
         return result
     except Exception as e:
         log(f"❌ Claude Fehler: {e}")
@@ -209,12 +240,15 @@ def speichere_in_belegfluss(analyse, dateiname, mail_datum, pdf_url=None):
             "absender": analyse.get("absender_name", "Unbekannt"),
             "typ": analyse.get("typ", "Sonstiges"),
             "prioritaet": analyse.get("prioritaet", "Kein Eiltempo"),
-            "betrag": analyse.get("betrag", 0),
+            "betrag": analyse.get("betrag_netto", 0),
+            "betrag_netto": analyse.get("betrag_netto", 0),
+            "betrag_brutto": analyse.get("betrag_brutto", 0),
             "mwst_satz": analyse.get("mwst_satz", 8.1),
             "mwst_betrag": analyse.get("mwst_betrag", 0),
             "frist": analyse.get("frist"),
             "konto_aufwand": analyse.get("konto_aufwand"),
             "konto_kredit": analyse.get("konto_kredit", "2000"),
+            "konto_vorsteuer": analyse.get("konto_vorsteuer"),
             "agent_zusammenfassung": analyse.get("zusammenfassung", ""),
             "agent_verarbeitet": True,
             "original_dateiname": dateiname,
@@ -224,7 +258,7 @@ def speichere_in_belegfluss(analyse, dateiname, mail_datum, pdf_url=None):
         antwort = requests.post(url, headers=headers, json=daten, timeout=30)
         log(f"📡 Status: {antwort.status_code}")
         if antwort.status_code in [200, 201]:
-            log(f"✅ Gespeichert!")
+            log("✅ Gespeichert!")
             return antwort.json()
         else:
             log(f"❌ Fehler: {antwort.status_code} - {antwort.text[:200]}")
@@ -264,10 +298,9 @@ def verarbeite_mail(mail, mail_id):
         if not analyse:
             log("❌ Analyse fehlgeschlagen")
             continue
-        log(f"✅ {analyse.get('typ')} | {analyse.get('betrag')} CHF | {analyse.get('konto_aufwand')}/{analyse.get('konto_kredit')} | {analyse.get('prioritaet')}")
         ergebnis = speichere_in_belegfluss(analyse, pdf["dateiname"], mail_daten["datum"], pdf_url)
         if ergebnis:
-            logge_aktion("DOKUMENT_VERARBEITET", f"{pdf['dateiname']} | {analyse.get('typ')} | {analyse.get('betrag')} CHF | Konto {analyse.get('konto_aufwand')}", ergebnis.get("id"))
+            logge_aktion("DOKUMENT_VERARBEITET", f"{pdf['dateiname']} | {analyse.get('typ')} | Netto: {analyse.get('betrag_netto')} CHF | Konto {analyse.get('konto_aufwand')}", ergebnis.get("id"))
             log("🎉 Erfolgreich gespeichert!")
 
 def haupt_schleife():
