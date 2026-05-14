@@ -10,7 +10,7 @@ import json
 import threading
 from datetime import datetime
 from reportlab.pdfgen import canvas
-from reportlab.lib.colors import HexColor, white, black, Color
+from reportlab.lib.colors import Color
 from reportlab.lib.units import mm
 from PyPDF2 import PdfReader, PdfWriter
 from flask import Flask, request, jsonify
@@ -22,7 +22,7 @@ IMAP_PORT         = int(os.environ.get("IMAP_PORT", "993"))
 IMAP_EMAIL        = os.environ.get("IMAP_EMAIL")
 IMAP_PASSWORD     = os.environ.get("IMAP_PASSWORD")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-BELEGFLUSS_URL    = "https://clear-board-hub.lovable.app"
+BELEGFLUSS_URL    = os.environ.get("BELEGFLUSS_URL", "https://lunys.ch")
 BELEGFLUSS_KEY    = os.environ.get("BELEGFLUSS_KEY", "")
 CHECK_INTERVAL    = int(os.environ.get("CHECK_INTERVAL", "60"))
 PORT              = int(os.environ.get("PORT", "8080"))
@@ -60,7 +60,6 @@ def log(message):
 # ─── STEMPEL ─────────────────────────────────────────────────
 
 def erstelle_eingangs_stempel():
-    """Transparenter EINGEGANGEN-Stempel oben rechts"""
     packet = io.BytesIO()
     c = canvas.Canvas(packet, pagesize=(210*mm, 297*mm))
     datum = datetime.now().strftime("%d.%m.%Y")
@@ -91,14 +90,13 @@ def erstelle_eingangs_stempel():
     return packet
 
 def erstelle_buchungs_stempel(daten):
-    """Transparenter BUCHUNGSBELEG-Stempel unten rechts"""
     packet = io.BytesIO()
     c = canvas.Canvas(packet, pagesize=(210*mm, 297*mm))
 
     vorsteuer_aktiv = daten.get("vorsteuer_aktiv", True)
-    konto_aufwand   = daten.get("konto_aufwand", "")
-    konto_vorsteuer = daten.get("konto_vorsteuer", "1170")
-    konto_kredit    = daten.get("konto_kredit", "2000")
+    konto_aufwand   = str(daten.get("konto_aufwand", ""))
+    konto_vorsteuer = str(daten.get("konto_vorsteuer", "1170"))
+    konto_kredit    = str(daten.get("konto_kredit", "2000"))
     betrag_netto    = float(daten.get("betrag_netto", 0) or 0)
     mwst_betrag     = float(daten.get("mwst_betrag", 0) or 0)
     betrag_brutto   = float(daten.get("betrag_brutto", 0) or 0)
@@ -138,13 +136,12 @@ def erstelle_buchungs_stempel(daten):
     zeile_y -= 5*mm
     abstand = 6.5*mm
 
-    # SOLL Aufwand
     c.setFillColor(Color(0.8, 0, 0, alpha=0.85))
     c.setFont("Helvetica-Bold", 6)
     c.drawString(x + 2*mm, zeile_y, "SOLL")
     c.setFillColor(Color(0, 0, 0, alpha=0.85))
     c.setFont("Helvetica", 6.5)
-    c.drawString(x + 14*mm, zeile_y, str(konto_aufwand))
+    c.drawString(x + 14*mm, zeile_y, konto_aufwand)
     c.drawString(x + 30*mm, zeile_y, "Aufwand")
     c.drawRightString(x + breite - 2*mm, zeile_y, f"{betrag_netto:,.2f}")
     zeile_y -= abstand
@@ -155,18 +152,17 @@ def erstelle_buchungs_stempel(daten):
         c.drawString(x + 2*mm, zeile_y, "SOLL")
         c.setFillColor(Color(0, 0, 0, alpha=0.85))
         c.setFont("Helvetica", 6.5)
-        c.drawString(x + 14*mm, zeile_y, str(konto_vorsteuer))
+        c.drawString(x + 14*mm, zeile_y, konto_vorsteuer)
         c.drawString(x + 30*mm, zeile_y, f"Vorsteuer {mwst_satz}%")
         c.drawRightString(x + breite - 2*mm, zeile_y, f"{mwst_betrag:,.2f}")
         zeile_y -= abstand
 
-    # HABEN Kreditoren
     c.setFillColor(Color(0, 0.5, 0, alpha=0.85))
     c.setFont("Helvetica-Bold", 6)
     c.drawString(x + 2*mm, zeile_y, "HABEN")
     c.setFillColor(Color(0, 0, 0, alpha=0.85))
     c.setFont("Helvetica", 6.5)
-    c.drawString(x + 14*mm, zeile_y, str(konto_kredit))
+    c.drawString(x + 14*mm, zeile_y, konto_kredit)
     c.drawString(x + 30*mm, zeile_y, "Kreditoren")
     c.drawRightString(x + breite - 2*mm, zeile_y, f"{betrag_brutto:,.2f}")
     zeile_y -= 3*mm
@@ -189,10 +185,8 @@ def erstelle_buchungs_stempel(daten):
     return packet
 
 def erstelle_bezahlt_stempel(bezahlt_am, bezahlt_von=""):
-    """Transparenter BEZAHLT-Stempel unten links"""
     packet = io.BytesIO()
     c = canvas.Canvas(packet, pagesize=(210*mm, 297*mm))
-
     x, y, breite, hoehe = 8*mm, 8*mm, 55*mm, 22*mm
 
     c.setFillColor(Color(1, 1, 1, alpha=0.65))
@@ -221,7 +215,6 @@ def erstelle_bezahlt_stempel(bezahlt_am, bezahlt_von=""):
     return packet
 
 def stempel_auf_pdf(pdf_daten, stempel_packet, seite_index=0):
-    """Fügt Stempel transparent auf eine Seite ein"""
     try:
         stempel_reader  = PdfReader(stempel_packet)
         stempel_seite   = stempel_reader.pages[0]
@@ -238,8 +231,6 @@ def stempel_auf_pdf(pdf_daten, stempel_packet, seite_index=0):
     except Exception as e:
         log(f"❌ Stempel Fehler: {e}")
         return pdf_daten
-
-# ─── UPLOAD HELPER ───────────────────────────────────────────
 
 def lade_pdf_hoch(pdf_daten, dateiname):
     try:
@@ -264,15 +255,14 @@ def lade_pdf_hoch(pdf_daten, dateiname):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "agent": "Belegfluss"})
+    return jsonify({"status": "ok", "agent": "Belegfluss", "url": BELEGFLUSS_URL})
 
 @app.route("/stempel/kontierung", methods=["POST", "OPTIONS"])
 def stempel_kontierung():
     if request.method == "OPTIONS":
         return "", 200
     try:
-        agent_key = request.headers.get("x-agent-key", "")
-        if agent_key != BELEGFLUSS_KEY:
+        if request.headers.get("x-agent-key", "") != BELEGFLUSS_KEY:
             return jsonify({"error": "Unauthorized"}), 401
 
         daten            = request.json
@@ -283,19 +273,17 @@ def stempel_kontierung():
         if not pdf_original_url:
             return jsonify({"error": "pdf_original_url fehlt"}), 400
 
-        log(f"🖊️ Buchungsstempel für: {dokument_id}")
-
+        log(f"🖊️ Buchungsstempel: {dokument_id}")
         pdf_response = requests.get(pdf_original_url, timeout=30)
         if pdf_response.status_code != 200:
             return jsonify({"error": "PDF nicht ladbar"}), 400
-        pdf_daten = pdf_response.content
 
-        stempel       = erstelle_buchungs_stempel({**daten, "freigegeben_von": freigegeben_von})
-        reader        = PdfReader(io.BytesIO(pdf_daten))
-        letzte_seite  = len(reader.pages) - 1
-        pdf_gestempelt = stempel_auf_pdf(pdf_daten, stempel, seite_index=letzte_seite)
+        stempel        = erstelle_buchungs_stempel({**daten, "freigegeben_von": freigegeben_von})
+        reader         = PdfReader(io.BytesIO(pdf_response.content))
+        letzte_seite   = len(reader.pages) - 1
+        pdf_gestempelt = stempel_auf_pdf(pdf_response.content, stempel, seite_index=letzte_seite)
+        pdf_url        = lade_pdf_hoch(pdf_gestempelt, f"kontiert_{dokument_id}.pdf")
 
-        pdf_url = lade_pdf_hoch(pdf_gestempelt, f"kontiert_{dokument_id}.pdf")
         if not pdf_url:
             return jsonify({"error": "Upload fehlgeschlagen"}), 500
 
@@ -311,8 +299,7 @@ def stempel_bezahlt():
     if request.method == "OPTIONS":
         return "", 200
     try:
-        agent_key = request.headers.get("x-agent-key", "")
-        if agent_key != BELEGFLUSS_KEY:
+        if request.headers.get("x-agent-key", "") != BELEGFLUSS_KEY:
             return jsonify({"error": "Unauthorized"}), 401
 
         daten           = request.json
@@ -324,19 +311,17 @@ def stempel_bezahlt():
         if not pdf_url_aktuell:
             return jsonify({"error": "pdf_url fehlt"}), 400
 
-        log(f"💚 Bezahlt-Stempel für: {dokument_id}")
-
+        log(f"💚 Bezahlt-Stempel: {dokument_id}")
         pdf_response = requests.get(pdf_url_aktuell, timeout=30)
         if pdf_response.status_code != 200:
             return jsonify({"error": "PDF nicht ladbar"}), 400
-        pdf_daten = pdf_response.content
 
         stempel        = erstelle_bezahlt_stempel(bezahlt_am, bezahlt_von)
-        reader         = PdfReader(io.BytesIO(pdf_daten))
+        reader         = PdfReader(io.BytesIO(pdf_response.content))
         letzte_seite   = len(reader.pages) - 1
-        pdf_gestempelt = stempel_auf_pdf(pdf_daten, stempel, seite_index=letzte_seite)
+        pdf_gestempelt = stempel_auf_pdf(pdf_response.content, stempel, seite_index=letzte_seite)
+        neue_pdf_url   = lade_pdf_hoch(pdf_gestempelt, f"bezahlt_{dokument_id}.pdf")
 
-        neue_pdf_url = lade_pdf_hoch(pdf_gestempelt, f"bezahlt_{dokument_id}.pdf")
         if not neue_pdf_url:
             return jsonify({"error": "Upload fehlgeschlagen"}), 500
 
@@ -378,10 +363,10 @@ def lade_kontoplan():
             else:
                 KONTOPLAN      = daten
                 FIRMA_SETTINGS = {}
-            log(f"✅ Kontoplan: {len(KONTOPLAN)} Konten")
+            log(f"✅ Kontoplan: {len(KONTOPLAN)} Konten | URL: {BELEGFLUSS_URL}")
             log(f"✅ Vorsteuer: {FIRMA_SETTINGS.get('vorsteuer_aktiv', True)}")
         else:
-            log(f"⚠️ Kontoplan Fehler: {antwort.status_code}")
+            log(f"⚠️ Kontoplan Fehler: {antwort.status_code} | URL: {BELEGFLUSS_URL}")
     except Exception as e:
         log(f"⚠️ Kontoplan Exception: {e}")
 
@@ -425,7 +410,7 @@ def analysiere_mit_claude(pdf_text, absender, betreff):
 
 WICHTIG BETRÄGE:
 - Gib IMMER den NETTO-Betrag zurück (ohne MWST)
-- Beispiel: Total CHF 4500.00 zzgl. MWST 8.1% CHF 364.50 → betrag_netto = 4500.00
+- Beispiel: Total CHF 4500.00 zzgl. MWST 8.1% → betrag_netto = 4500.00
 - NIEMALS den Bruttobetrag als Netto angeben!
 
 AUFWANDKONTEN:
@@ -434,7 +419,7 @@ AUFWANDKONTEN:
 KONTIERUNGSREGELN:
 - Werbung, APG, Marketing → 6600
 - Reinigung, Reinigungsservice → 6040
-- Telefon, Internet, Swisscom, Salt → 6510
+- Telefon, Internet, Swisscom, Salt, Hostpoint → 6510
 - Miete, Raumkosten → 6000
 - Versicherungen → 6300
 - Strom, Gas, Wasser → 6400
@@ -564,26 +549,19 @@ def verarbeite_mail(mail, mail_id):
             log("❌ Analyse fehlgeschlagen")
             continue
 
-        # Eingangs-Stempel oben rechts
         log("🖊️ Eingangs-Stempel...")
         eingangs_stempel = erstelle_eingangs_stempel()
         pdf_mit_eingang  = stempel_auf_pdf(pdf["daten"], eingangs_stempel, seite_index=0)
 
-        # Original hochladen (für Buchungsstempel später)
         pdf_original_url = lade_pdf_hoch(pdf["daten"], f"original_{pdf['dateiname']}")
-        # Mit Eingangs-Stempel hochladen
-        pdf_url = lade_pdf_hoch(pdf_mit_eingang, f"eingegangen_{pdf['dateiname']}")
+        pdf_url          = lade_pdf_hoch(pdf_mit_eingang, f"eingegangen_{pdf['dateiname']}")
 
         ergebnis = speichere_in_belegfluss(
             analyse, pdf["dateiname"], mail_daten["datum"],
             pdf_url=pdf_url, pdf_original_url=pdf_original_url
         )
         if ergebnis:
-            logge_aktion(
-                "DOKUMENT_EINGEGANGEN",
-                f"Netto: {analyse.get('betrag_netto')} | {analyse.get('konto_aufwand')}",
-                ergebnis.get("id")
-            )
+            logge_aktion("DOKUMENT_EINGEGANGEN", f"Netto: {analyse.get('betrag_netto')} | {analyse.get('konto_aufwand')}", ergebnis.get("id"))
             log("🎉 Gespeichert mit Eingangs-Stempel!")
 
 # ─── MAIL-CHECKER THREAD ─────────────────────────────────────
@@ -611,7 +589,7 @@ def mail_checker_loop():
 
 if __name__ == "__main__":
     log("🚀 Belegfluss Agent + Webserver startet")
-    log(f"🌐 URL: {BELEGFLUSS_URL}")
+    log(f"🌐 Belegfluss URL: {BELEGFLUSS_URL}")
     log(f"🔑 Key: {'OK' if BELEGFLUSS_KEY else 'FEHLT!'}")
     log(f"🚪 Port: {PORT}")
 
