@@ -69,22 +69,17 @@ def erstelle_eingangs_stempel():
     c.setStrokeColor(Color(0.8, 0, 0, alpha=0.6))
     c.setLineWidth(1.5)
     c.rect(x, y, breite, hoehe, fill=1, stroke=1)
-
     c.setFillColor(Color(0.8, 0, 0, alpha=0.55))
     c.rect(x, y + hoehe - 7*mm, breite, 7*mm, fill=1, stroke=0)
-
     c.setFillColor(Color(1, 1, 1, alpha=0.95))
     c.setFont("Helvetica-Bold", 7)
     c.drawCentredString(x + breite/2, y + hoehe - 5*mm, "EINGEGANGEN")
-
     c.setFillColor(Color(0.8, 0, 0, alpha=0.8))
     c.setFont("Helvetica-Bold", 9)
     c.drawCentredString(x + breite/2, y + hoehe - 13*mm, datum)
-
     c.setFillColor(Color(0.4, 0.4, 0.4, alpha=0.7))
     c.setFont("Helvetica", 5.5)
     c.drawCentredString(x + breite/2, y + 2*mm, "Belegfluss KI-Agent")
-
     c.save()
     packet.seek(0)
     return packet
@@ -112,10 +107,8 @@ def erstelle_buchungs_stempel(daten):
     c.setStrokeColor(Color(0.8, 0, 0, alpha=0.65))
     c.setLineWidth(1.5)
     c.rect(x, y, breite, hoehe, fill=1, stroke=1)
-
     c.setFillColor(Color(0.8, 0, 0, alpha=0.6))
     c.rect(x, y + hoehe - 9*mm, breite, 9*mm, fill=1, stroke=0)
-
     c.setFillColor(Color(1, 1, 1, alpha=0.95))
     c.setFont("Helvetica-Bold", 7.5)
     c.drawString(x + 3*mm, y + hoehe - 6*mm, "BUCHUNGSBELEG")
@@ -193,18 +186,14 @@ def erstelle_bezahlt_stempel(bezahlt_am, bezahlt_von=""):
     c.setStrokeColor(Color(0, 0.5, 0, alpha=0.7))
     c.setLineWidth(1.5)
     c.rect(x, y, breite, hoehe, fill=1, stroke=1)
-
     c.setFillColor(Color(0, 0.5, 0, alpha=0.6))
     c.rect(x, y + hoehe - 7*mm, breite, 7*mm, fill=1, stroke=0)
-
     c.setFillColor(Color(1, 1, 1, alpha=0.95))
     c.setFont("Helvetica-Bold", 7)
     c.drawCentredString(x + breite/2, y + hoehe - 5*mm, "BEZAHLT")
-
     c.setFillColor(Color(0, 0.4, 0, alpha=0.85))
     c.setFont("Helvetica-Bold", 9)
     c.drawCentredString(x + breite/2, y + hoehe - 13*mm, str(bezahlt_am))
-
     if bezahlt_von:
         c.setFillColor(Color(0.3, 0.3, 0.3, alpha=0.8))
         c.setFont("Helvetica", 5.5)
@@ -366,7 +355,7 @@ def lade_kontoplan():
             log(f"✅ Kontoplan: {len(KONTOPLAN)} Konten | URL: {BELEGFLUSS_URL}")
             log(f"✅ Vorsteuer: {FIRMA_SETTINGS.get('vorsteuer_aktiv', True)}")
         else:
-            log(f"⚠️ Kontoplan Fehler: {antwort.status_code} | URL: {BELEGFLUSS_URL}")
+            log(f"⚠️ Kontoplan Fehler: {antwort.status_code}")
     except Exception as e:
         log(f"⚠️ Kontoplan Exception: {e}")
 
@@ -408,31 +397,70 @@ def analysiere_mit_claude(pdf_text, absender, betreff):
 
     prompt = f"""Du bist ein erfahrener Schweizer Treuhänder mit 20 Jahren KMU-Erfahrung.
 
+WICHTIGSTE AUFGABE - TYP KORREKT BESTIMMEN:
+
+Die Typ-Klassifizierung bestimmt wo das Dokument im Dashboard erscheint:
+- "Rechnung" oder "Mahnung" → Tab RECHNUNGEN (hat einen zu bezahlenden Betrag)
+- "MWST", "AHV", "Behörde", "Vertrag", "Sonstiges" → Tab AUFGABEN (keine direkte Zahlung)
+
+ENTSCHEIDUNGSBAUM FÜR TYP:
+
+1. Hat das Dokument einen klar zu bezahlenden Betrag (Rechnung, Faktura, Mahnung)?
+   → JA: typ = "Rechnung" oder "Mahnung"
+   → NEIN: weiter zu Schritt 2
+
+2. Geht es um MWST?
+   → Aufforderung MWST einzureichen, MWST-Abrechnung einreichen, Erinnerung MWST → typ = "MWST"
+   → MWST-Nachzahlungsrechnung mit Betrag → typ = "Rechnung"
+
+3. Geht es um AHV/Sozialversicherungen?
+   → Aufforderung AHV abzurechnen, Lohnmeldung, Information → typ = "AHV"
+   → AHV-Beitragsrechnung mit Betrag → typ = "Rechnung"
+
+4. Geht es um Behörden (Steuerverwaltung, Gemeinde, Kanton)?
+   → Informationsschreiben, Verfügung, Aufforderung ohne Zahlung → typ = "Behörde"
+   → Steuerrechnung mit Betrag → typ = "Rechnung"
+
+5. Ist es ein Vertrag, Offerte, Kündigung?
+   → typ = "Vertrag"
+
+6. Mahnung (bereits überfällige Rechnung)?
+   → typ = "Mahnung"
+
+7. Sonst → typ = "Sonstiges"
+
 WICHTIG BETRÄGE:
 - Gib IMMER den NETTO-Betrag zurück (ohne MWST)
-- Beispiel: Total CHF 4500.00 zzgl. MWST 8.1% → betrag_netto = 4500.00
+- Wenn kein Betrag → betrag_netto = 0
 - NIEMALS den Bruttobetrag als Netto angeben!
 
-AUFWANDKONTEN:
+AUFWANDKONTEN (nur für Rechnungen/Mahnungen relevant):
 {kontoplan_text}
 
 KONTIERUNGSREGELN:
 - Werbung, APG, Marketing → 6600
-- Reinigung, Reinigungsservice → 6040
+- Reinigung → 6040
 - Telefon, Internet, Swisscom, Salt, Hostpoint → 6510
-- Miete, Raumkosten → 6000
+- Miete → 6000
 - Versicherungen → 6300
 - Strom, Gas, Wasser → 6400
-- Fahrzeuge, Treibstoff → 6200
+- Fahrzeuge → 6200
 - Büromaterial → 6500
-- IT, Software, Hosting, Domain → 6570
+- IT, Software, Hosting → 6570
 - Beratung, Treuhand, Buchhaltung → 6530
 - Löhne → 5000
 - AHV, Sozialversicherungen → 5700
 - Material, Waren, Baustoffe → 4000
-- Fremdarbeiten, Subunternehmer → 4060
+- Fremdarbeiten → 4060
 - Bankspesen → 6940
+- Steuern → 8900
 - Kreditoren IMMER → 2000
+
+PRIORITÄT BERECHNEN:
+- Mahnung oder überfällig → "Dringend"
+- Frist in weniger als 3 Tagen → "Dringend"
+- Frist in weniger als 7 Tagen → "Diese Woche"
+- Sonst → "Kein Eiltempo"
 
 DOKUMENT:
 Absender: {absender}
@@ -442,16 +470,16 @@ Inhalt:
 
 Antworte NUR mit validem JSON:
 {{
-  "typ": "Rechnung",
+  "typ": "Rechnung|Mahnung|MWST|AHV|Behörde|Vertrag|Sonstiges",
   "absender_name": "exakter Firmenname",
   "betrag_netto": 0.00,
   "mwst_satz": 8.1,
   "rechnungsdatum": "DD.MM.YYYY oder leer",
   "frist": "YYYY-MM-DD oder null",
-  "konto_aufwand": "KONTONUMMER",
+  "konto_aufwand": "KONTONUMMER oder null wenn keine Rechnung",
   "konto_kredit": "2000",
   "prioritaet": "Kein Eiltempo",
-  "zusammenfassung": "1 Satz auf Deutsch"
+  "zusammenfassung": "1 klarer Satz was dieses Dokument ist und was zu tun ist"
 }}"""
 
     try:
@@ -469,17 +497,26 @@ Antworte NUR mit validem JSON:
         result = json.loads(text.strip())
         result["prioritaet"] = normalisiere_prioritaet(result.get("prioritaet", ""))
 
-        netto, mwst, brutto = berechne_betraege(
-            result.get("betrag_netto", 0),
-            result.get("mwst_satz", 8.1)
-        )
-        result["betrag_netto"]    = netto
-        result["mwst_betrag"]     = mwst
-        result["betrag_brutto"]   = brutto
-        result["konto_vorsteuer"] = konto_vorsteuer if vorsteuer_aktiv else None
-        result["vorsteuer_aktiv"] = vorsteuer_aktiv
+        # Beträge nur berechnen wenn Rechnung/Mahnung
+        if result.get("typ") in ["Rechnung", "Mahnung"]:
+            netto, mwst, brutto = berechne_betraege(
+                result.get("betrag_netto", 0),
+                result.get("mwst_satz", 8.1)
+            )
+            result["betrag_netto"]    = netto
+            result["mwst_betrag"]     = mwst
+            result["betrag_brutto"]   = brutto
+            result["konto_vorsteuer"] = konto_vorsteuer if vorsteuer_aktiv else None
+            result["vorsteuer_aktiv"] = vorsteuer_aktiv
+            log(f"✅ {result.get('typ')} | {result.get('konto_aufwand')} | Netto: {netto} + MWST: {mwst} = Brutto: {brutto}")
+        else:
+            result["betrag_netto"]    = 0
+            result["mwst_betrag"]     = 0
+            result["betrag_brutto"]   = 0
+            result["konto_vorsteuer"] = None
+            result["vorsteuer_aktiv"] = False
+            log(f"✅ {result.get('typ')} | Aufgabe | {result.get('zusammenfassung', '')[:50]}")
 
-        log(f"✅ {result.get('konto_aufwand')} | Netto: {netto} + MWST: {mwst} = Brutto: {brutto}")
         return result
     except Exception as e:
         log(f"❌ Claude Fehler: {e}")
@@ -561,8 +598,12 @@ def verarbeite_mail(mail, mail_id):
             pdf_url=pdf_url, pdf_original_url=pdf_original_url
         )
         if ergebnis:
-            logge_aktion("DOKUMENT_EINGEGANGEN", f"Netto: {analyse.get('betrag_netto')} | {analyse.get('konto_aufwand')}", ergebnis.get("id"))
-            log("🎉 Gespeichert mit Eingangs-Stempel!")
+            logge_aktion(
+                "DOKUMENT_EINGEGANGEN",
+                f"Typ: {analyse.get('typ')} | Netto: {analyse.get('betrag_netto')} | {analyse.get('konto_aufwand')}",
+                ergebnis.get("id")
+            )
+            log(f"🎉 Gespeichert! Typ: {analyse.get('typ')} → {'Rechnungen' if analyse.get('typ') in ['Rechnung', 'Mahnung'] else 'Aufgaben'}")
 
 # ─── MAIL-CHECKER THREAD ─────────────────────────────────────
 
